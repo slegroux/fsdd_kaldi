@@ -3,12 +3,13 @@ set -xeuo pipefail
 . ./path.sh || exit 1
 . ./cmd.sh || exit 1
 
-nj=1         # number of parallel jobs - 1 is perfect for such a small data set
+nj=2         # number of parallel jobs - 1 is perfect for such a small data set
 lm_order=1     # language model order (n-gram quantity) - 1 is enough for digits grammar
 
 # Safety mechanism (possible running this script with modified arguments)
 . utils/parse_options.sh || exit 1
 [[ $# -ge 1 ]] && { echo "Wrong arguments!"; exit 1; } 
+
 
 # Removing previously created data (from last run.sh execution)
 rm -rf exp mfcc data/train/spk2utt data/train/cmvn.scp data/train/feats.scp data/train/split1 data/test/spk2utt data/test/cmvn.scp data/test/feats.scp data/test/split1 data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
@@ -16,6 +17,14 @@ rm -rf exp mfcc data/train/spk2utt data/train/cmvn.scp data/train/feats.scp data
 echo
 echo "===== PREPARING ACOUSTIC DATA ====="
 echo
+
+# DATA PREPARATION
+# text: <utt_id> <transcript>
+# wav.scp: <file_id><wave filename with path>
+# utt2spk: <utt_id> <speaker_id>
+
+# note: files should be sorted
+# can use utils/fix_data_dir.sh to do so
 
 # Needs to be prepared by hand (or using self written scripts): 
 #
@@ -40,7 +49,7 @@ mfccdir=mfcc
 steps/make_mfcc.sh --nj $nj --cmd "$train_cmd" data/train exp/make_mfcc/train $mfccdir
 steps/make_mfcc.sh --nj $nj --cmd "$train_cmd" data/test exp/make_mfcc/test $mfccdir
 
-# Making cmvn.scp files
+# Normalize cepstral features. Making cmvn.scp files
 steps/compute_cmvn_stats.sh data/train exp/make_mfcc/train $mfccdir
 steps/compute_cmvn_stats.sh data/test exp/make_mfcc/test $mfccdir
 
@@ -56,6 +65,7 @@ echo
 # optional_silence.txt    [<phone>]
 
 # Preparing language data
+# --position-dependent-phones false
 utils/prepare_lang.sh data/local/dict "<UNK>" data/local/lang data/lang
 
 echo
@@ -124,6 +134,13 @@ echo
 
 utils/mkgraph.sh data/lang exp/tri1 exp/tri1/graph || exit 1
 steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode
+
+
+echo
+echo "==== WORD LEVEL ALIGNMENT ===="
+echo
+
+steps/get_ctm.sh data/train data/lang/ exp/mono/decode/
 
 echo
 echo "===== run.sh script is finished ====="
