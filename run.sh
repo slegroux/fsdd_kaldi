@@ -18,6 +18,8 @@ echo
 echo "===== PREPARING ACOUSTIC DATA ====="
 echo
 
+python data/test/make_test_data.py
+
 # DATA PREPARATION
 # text: <utt_id> <transcript>
 # wav.scp: <file_id><wave filename with path>
