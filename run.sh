@@ -1,10 +1,10 @@
 #!/bin/bash
 #set -xeuo pipefail
-set -x
+#set -x
 . ./path.sh || exit 1
 . ./cmd.sh || exit 1
 
-nj=2         # number of parallel jobs
+nj=1         # number of parallel jobs
 lm_order=1     # language model order (n-gram quantity) - 1 is enough for digits grammar
 stage=0
 
@@ -23,8 +23,8 @@ if [ $stage -ge 0 ]; then
     echo
     echo "===== PREPARING ACOUSTIC DATA ====="
     echo
-    python data/make_test.py
-    python data/make_train.py
+    ./local/make_test.py
+    ./local/make_train.py
 
     # DATA PREPARATION
     # text: <utt_id> <transcript>
@@ -113,7 +113,7 @@ if [ $stage -ge 3 ]; then
 
     local=data/local
     mkdir -p data/local/tmp
-    ngram-count -order $lm_order -write-vocab $local/tmp/vocab-full.txt -wbdiscount -text $local/corpus.txt -lm $local/tmp/lm.arpa
+    ngram-count -order $lm_order -write-vocab $local/tmp/vocab-full.txt -wbdiscount -text $local/corpus.txt -lm $local/tmp/lm.arpa -sort
 fi
 
 if [ $stage -ge 4 ]; then
@@ -122,6 +122,7 @@ if [ $stage -ge 4 ]; then
     echo
 
     lang=data/lang
+    mkdir -p data/lang
     cat $local/tmp/lm.arpa | arpa2fst - | fstprint | utils/eps2disambig.pl | utils/s2eps.pl | \
 	fstcompile --isymbols=$lang/words.txt --osymbols=$lang/words.txt --keep_isymbols=false --keep_osymbols=false | \
 	fstrmepsilon | fstarcsort --sort_type=ilabel > $lang/G.fst
@@ -130,40 +131,46 @@ if [ $stage -ge 4 ]; then
     echo "===== MONO TRAINING ====="
     echo
 
-    steps/train_mono.sh --nj 1 --cmd "$train_cmd" data/train data/lang exp/mono  || exit 1
+    steps/train_mono.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono  || exit 1
 
     echo
     echo "===== MONO DECODING ====="
     echo
 
-    # utils/mkgraph.sh --mono data/lang exp/mono exp/mono/graph || exit 1
-    # steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode
+    utils/mkgraph.sh --mono data/lang exp/mono exp/mono/graph || exit 1
+    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode
 
     echo
     echo "===== MONO ALIGNMENT =====" 
     echo
 
-    # steps/align_si.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono exp/mono_ali || exit 1
+    steps/align_si.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono exp/mono_ali || exit 1
 
     echo
     echo "===== TRI1 (first triphone pass) TRAINING ====="
     echo
 
-   # steps/train_deltas.sh --cmd "$train_cmd" 2000 11000 data/train data/lang exp/mono_ali exp/tri1 || exit 1
+   steps/train_deltas.sh --cmd "$train_cmd" 2000 11000 data/train data/lang exp/mono_ali exp/tri1 || exit 1
 
     echo
     echo "===== TRI1 (first triphone pass) DECODING ====="
     echo
 
-    # utils/mkgraph.sh data/lang exp/tri1 exp/tri1/graph || exit 1
-    # steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode
+    utils/mkgraph.sh data/lang exp/tri1 exp/tri1/graph || exit 1
+    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode
 
 
     echo
     echo "==== WORD LEVEL ALIGNMENT ===="
     echo
 
-    # steps/get_ctm.sh data/train data/lang/ exp/mono/decode/
+    steps/get_ctm.sh data/train data/lang/ exp/mono/decode/
+
+    echo
+    echo "==== WER ===="
+    echo
+
+    for x in exp/*/decode*; do [ -d $x ] && grep WER $x/wer_* | utils/best_wer.sh; done
 
     echo
     echo "===== run.sh script is finished ====="

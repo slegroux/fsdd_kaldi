@@ -4,7 +4,7 @@ import pdb
 import os, re
 DATA_PATH = os.getenv('DATA') + "/free-spoken-digit-dataset/recordings"
 files = os.listdir(DATA_PATH)
-LOCAL_PATH = os.path.dirname(os.path.realpath(__file__))
+LOCAL_PATH = 'data'
 print(LOCAL_PATH)
 # 50 utterances for each digit. we take the first 10 for testing (20%)
 expression = r"_[0-9].wav"
