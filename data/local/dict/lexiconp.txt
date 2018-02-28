@@ -1,5 +1,4 @@
-!SIL 1.0	sil
-<UNK> 1.0	spn
+<sil> 1.0	sil
 eight 1.0	ey t
 five 1.0	f ay v
 four 1.0	f ao r

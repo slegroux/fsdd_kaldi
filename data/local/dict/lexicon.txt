@@ -1,5 +1,4 @@
-!SIL sil
-<UNK> spn
+<sil> sil
 eight ey t
 five f ay v
 four f ao r

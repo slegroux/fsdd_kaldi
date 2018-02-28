@@ -1,19 +1,21 @@
 #!/bin/bash
 #set -xeuo pipefail
 #set -x
-. ./path.sh || exit 1
-. ./cmd.sh || exit 1
+. path.sh || exit 1
+. cmd.sh || exit 1
 
-nj=1         # number of parallel jobs
+nj=3         # number of parallel jobs (~speakers)
 lm_order=1     # language model order (n-gram quantity) - 1 is enough for digits grammar
 stage=0
-
+echo $train_cmd
 # Safety mechanism (possible running this script with modified arguments)
 . utils/parse_options.sh || exit 1
 [[ $# -ge 1 ]] && { echo "Wrong arguments!"; exit 1; } 
 
 # Removing previously created data (from last run.sh execution)
-rm -rf exp mfcc data/train/* data/test/* data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
+rm -rf exp mfcc data/train data/test data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
+mkdir -p data/train
+mkdir -p data/test
 
 # download dataset from github if doesn't exist
 # check wav encoding
@@ -43,6 +45,8 @@ if [ $stage -ge 0 ]; then
     # corpus.txt    [<text_transcription>]
 
     # sort utt2spk
+    utils/validate_data_dir.sh data/train
+    utils/validate_data_dir.sh data/test
     utils/fix_data_dir.sh data/train
     utils/fix_data_dir.sh data/test
 
@@ -64,10 +68,15 @@ if [ $stage -ge 1 ]; then
     steps/make_mfcc.sh --nj $nj --cmd "$train_cmd" data/test exp/make_mfcc/test $mfccdir
 
     # Normalize cepstral features. Making cmvn.scp files
+    # use --fake flag to skip feature normalization step
     steps/compute_cmvn_stats.sh data/train exp/make_mfcc/train $mfccdir
     steps/compute_cmvn_stats.sh data/test exp/make_mfcc/test $mfccdir
-fi
 
+    # Print MFCC result
+    copy-feats scp:mfcc/raw_mfcc_test.1.scp ark,t:- |head
+    copy-feats ark:mfcc/raw_mfcc_test.1.ark ark,t:- |head
+
+fi
 
 
 if [ $stage -ge 2 ]; then
@@ -85,12 +94,12 @@ if [ $stage -ge 2 ]; then
 
     # Preparing language data
     # --position-dependent-phones false
-    utils/prepare_lang.sh data/local/dict "<UNK>" data/local/lang data/lang
+    utils/prepare_lang.sh data/local/dict "<sil>" data/local/lang data/lang
 fi
+
 
 if [ $stage -ge 3 ]; then
     echo
-    echo "===== LANGUAGE MODEL CREATION ====="
     echo "===== MAKING lm.arpa ====="
     echo
 
@@ -118,7 +127,7 @@ fi
 
 if [ $stage -ge 4 ]; then
     echo
-    echo "===== MAKING G.fst ====="
+    echo "===== COMPILING GRAMMAR G.fst ====="
     echo
 
     lang=data/lang
@@ -126,19 +135,23 @@ if [ $stage -ge 4 ]; then
     cat $local/tmp/lm.arpa | arpa2fst - | fstprint | utils/eps2disambig.pl | utils/s2eps.pl | \
 	fstcompile --isymbols=$lang/words.txt --osymbols=$lang/words.txt --keep_isymbols=false --keep_osymbols=false | \
 	fstrmepsilon | fstarcsort --sort_type=ilabel > $lang/G.fst
+fi
+
+if [ $stage -ge 5 ]; then
 
     echo
     echo "===== MONO TRAINING ====="
     echo
 
-    steps/train_mono.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono  || exit 1
+    #--num-iters 10 --max-iter-inc 8 --totgauss 100 --boost-silence 1.25 --realign-iters "1 4 7 10"
+    steps/train_mono.sh --num-iters 10 --max-iter-inc 8 --totgauss 100 --boost-silence 1.25 --realign-iters "1 3 5 7 10" --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono  || exit 1
 
     echo
     echo "===== MONO DECODING ====="
     echo
 
     utils/mkgraph.sh --mono data/lang exp/mono exp/mono/graph || exit 1
-    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode
+    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode || exit 1
 
     echo
     echo "===== MONO ALIGNMENT =====" 
@@ -146,33 +159,65 @@ if [ $stage -ge 4 ]; then
 
     steps/align_si.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono exp/mono_ali || exit 1
 
+fi
+
+if [ $stage -ge 6 ]; then
+
     echo
     echo "===== TRI1 (first triphone pass) TRAINING ====="
     echo
+    # triphone model to try to capture and model the effects of the two neighboring phones
+    # Since the number of possible triphones is very large, many systems use a decision tree to cluster sets of triphones (aka senones) to reduce the complexity of the system to a more manageable scale
 
-   steps/train_deltas.sh --cmd "$train_cmd" 2000 11000 data/train data/lang exp/mono_ali exp/tri1 || exit 1
+    # param: <num-leaves>  The number of such sets of triphones, corresponding to the leaves of the decision tree.
+    #        <tot-gauss>   The total number of Gaussian mixtures used to model them (rule of thumb: <20 * num-leaves)
+    # num_leaves=2000
+    # tot_gauss=11000
+    steps/train_deltas.sh --cmd "$train_cmd" 10 100 data/train data/lang exp/mono_ali exp/tri1 || exit 1
 
     echo
     echo "===== TRI1 (first triphone pass) DECODING ====="
     echo
 
     utils/mkgraph.sh data/lang exp/tri1 exp/tri1/graph || exit 1
-    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode
+    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode || exit 1
 
 
     echo
     echo "==== WORD LEVEL ALIGNMENT ===="
     echo
 
-    steps/get_ctm.sh data/train data/lang/ exp/mono/decode/
+    steps/get_ctm.sh data/train data/lang/ exp/mono/decode/ || exit 1
 
-    echo
-    echo "==== WER ===="
-    echo
-
-    for x in exp/*/decode*; do [ -d $x ] && grep WER $x/wer_* | utils/best_wer.sh; done
-
-    echo
-    echo "===== run.sh script is finished ====="
-    echo
 fi
+
+if [ $stage -ge 7 ]; then
+    local/online/run_nnet2_multisplice.sh
+fi
+
+
+
+echo
+echo "==== WER ===="
+echo
+
+for x in exp/*/decode*; do [ -d $x ] && grep WER $x/wer_* | utils/best_wer.sh; done
+
+echo
+echo "==== SER ===="
+echo
+
+for x in exp/*/decode*; do [ -d $x ] && grep SER $x/wer_* | utils/best_wer.sh; done
+
+
+# echo
+# echo "==== translate lattice into text ===="
+# echo
+
+# lattice-best-path --acoustic-scale=0.1 --lm-scale=12 --word-symbol-table=exp/tri1/graph/words.txt "ark:zcat exp/tri1/decode/lat.1.gz |" ark,t:- | utils/int2sym.pl -f 2- exp/tri1/graph/words.txt > exp/tri1/decode/hyp.txt
+# cat exp/tri1/decode/hyp.txt
+
+# echo
+# echo "===== run.sh script is finished ====="
+# echo
+
