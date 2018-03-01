@@ -21,7 +21,7 @@ mkdir -p data/test
 # check wav encoding
 
 
-if [ $stage -ge 0 ]; then
+if [ $stage -le 0 ]; then
     echo
     echo "===== PREPARING ACOUSTIC DATA ====="
     echo
@@ -56,7 +56,7 @@ if [ $stage -ge 0 ]; then
 fi
 
 
-if [ $stage -ge 1 ]; then
+if [ $stage -le 1 ]; then
     echo
     echo "===== FEATURES EXTRACTION ====="
     echo
@@ -79,7 +79,7 @@ if [ $stage -ge 1 ]; then
 fi
 
 
-if [ $stage -ge 2 ]; then
+if [ $stage -le 2 ]; then
     
     echo
     echo "===== PREPARING LANGUAGE DATA ====="
@@ -98,7 +98,7 @@ if [ $stage -ge 2 ]; then
 fi
 
 
-if [ $stage -ge 3 ]; then
+if [ $stage -le 3 ]; then
     echo
     echo "===== MAKING lm.arpa ====="
     echo
@@ -125,7 +125,7 @@ if [ $stage -ge 3 ]; then
     ngram-count -order $lm_order -write-vocab $local/tmp/vocab-full.txt -wbdiscount -text $local/corpus.txt -lm $local/tmp/lm.arpa -sort
 fi
 
-if [ $stage -ge 4 ]; then
+if [ $stage -le 4 ]; then
     echo
     echo "===== COMPILING GRAMMAR G.fst ====="
     echo
@@ -137,7 +137,7 @@ if [ $stage -ge 4 ]; then
 	fstrmepsilon | fstarcsort --sort_type=ilabel > $lang/G.fst
 fi
 
-if [ $stage -ge 5 ]; then
+if [ $stage -le 5 ]; then
 
     echo
     echo "===== MONO TRAINING ====="
@@ -161,7 +161,7 @@ if [ $stage -ge 5 ]; then
 
 fi
 
-if [ $stage -ge 6 ]; then
+if [ $stage -le 6 ]; then
 
     echo
     echo "===== TRI1 (first triphone pass) TRAINING ====="
@@ -191,7 +191,7 @@ if [ $stage -ge 6 ]; then
 
 fi
 
-if [ $stage -ge 7 ]; then
+if [ $stage -le 7 ]; then
     local/online/run_nnet2_multisplice.sh
 fi
 
