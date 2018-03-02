@@ -5,7 +5,7 @@
 . path.sh || exit 1
 . cmd.sh || exit 1
 
-nprocs=3         # number of parallel jobs
+nprocs=3        # number of parallel jobs
 nspkrs=3
 lm_order=1     # language model order (n-gram quantity) - 1 is enough for digits grammar
 stage=0
@@ -64,15 +64,16 @@ fi
 
 
 if [ $stage -le 2 ]; then
+    
     echo
     echo "===== FEATURES EXTRACTION ====="
     echo
     # Making feats.scp files
-   export  mfccdir=mfcc
+    export  mfccdir=mfcc
     # utils/validate_data_dir.sh data/train     # script for checking if prepared data is all right
     # utils/fix_data_dir.sh data/train          # tool for data sorting if something goes wrong above
-    steps/make_mfcc.sh --nj $nprocs --cmd "$train_cmd" data/train exp/make_mfcc/train $mfccdir
-    steps/make_mfcc.sh --nj $nprocs --cmd "$train_cmd" data/test exp/make_mfcc/test $mfccdir
+    steps/make_mfcc.sh --nj $nspkrs --cmd "$train_cmd" data/train exp/make_mfcc/train $mfccdir
+    steps/make_mfcc.sh --nj $nspkrs --cmd "$train_cmd" data/test exp/make_mfcc/test $mfccdir
 
     # Normalize cepstral features. Making cmvn.scp files
     # use --fake flag to skip feature normalization step
@@ -106,6 +107,7 @@ fi
 
 
 if [ $stage -le 4 ]; then
+    
     echo
     echo "===== MAKING lm.arpa ====="
     echo
@@ -133,6 +135,7 @@ if [ $stage -le 4 ]; then
 fi
 
 if [ $stage -le 5 ]; then
+    
     echo
     echo "===== COMPILING GRAMMAR G.fst ====="
     echo
@@ -145,7 +148,6 @@ if [ $stage -le 5 ]; then
 fi
 
 if [ $stage -le 6 ]; then
-
 
     # PARAMS
     # number of states for phoneme training
@@ -182,6 +184,8 @@ if [ $stage -le 6 ]; then
     # tot_gauss=11000
     
     echo "Train tri1 [first triphone pass]"
+    pdf=3200
+    gauss=30000
     steps/train_deltas.sh  --cmd "$train_cmd" --boost-silence 1.25 \
 			   $pdf $gauss $WORK/train $WORK/lang $EXP/mono_ali $EXP/tri1 || exit 1;
 
@@ -192,16 +196,38 @@ if [ $stage -le 6 ]; then
 		       --use-graphs true $WORK/train $WORK/lang $EXP/tri1 $EXP/tri1_ali || exit 1;
 
     echo "Train tri2a [delta+delta-deltas]"
+    pdf=4200
+    gauss=40000
     steps/train_deltas.sh  --cmd "$train_cmd" $pdf $gauss \
 			   $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2a || exit 1;
 
     echo "Train tri2b [LDA+MLLT]"
+    pdf=4200
+    gauss=40000
     steps/train_lda_mllt.sh  --cmd "$train_cmd" --splice-opts "--left-context=3 --right-context=3" $pdf $gauss \
     			     $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2b || exit 1;
 
-    echo "Align all data with LDA+MLLT system (tri2b)"
+    echo "Align"
     steps/align_si.sh  --nj $nprocs --cmd "$train_cmd" \
     		       --use-graphs true $WORK/train $WORK/lang $EXP/tri2b $EXP/tri2b_ali || exit 1;
+
+    echo "SAT+fmllr (tri3b)"
+    pdf=4200
+    gauss=40000
+    steps/train_sat.sh --cmd "$train_cmd" $pdf $gauss \
+      $WORK/train $WORK/lang $EXP/tri2b_ali $EXP/tri3b || exit 1;
+
+    echo "align"
+    steps/align_si.sh  --nj $nprocs --cmd "$train_cmd" \
+    		       --use-graphs true $WORK/train $WORK/lang $EXP/tri3b $EXP/tri3b_ali || exit 1;
+
+    echo "SGMM UBM (ubm5b2)"
+    steps/train_ubm.sh  --cmd "$train_cmd"  \
+      200 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2
+
+    steps/train_sgmm2.sh  --cmd "$train_cmd"  \
+       5200 12000 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2/final.ubm $EXP/sgmm2_5b2
+
 
     echo "Train MMI on top of LDA+MLLT."
     steps/make_denlats.sh  --nj $nprocs --cmd "$train_cmd" \
@@ -221,7 +247,7 @@ if [ $stage -le 6 ]; then
 fi
 
 if [ $stage -le 7 ]; then
-
+    
     echo
     echo "===== GRAPH GENERATION ====="
     echo
@@ -229,7 +255,8 @@ if [ $stage -le 7 ]; then
     utils/mkgraph.sh $WORK/lang $EXP/tri1 $EXP/tri1/graph || exit 1
     utils/mkgraph.sh $WORK/lang $EXP/tri2a $EXP/tri2a/graph || exit 1
     utils/mkgraph.sh $WORK/lang $EXP/tri2b $EXP/tri2b/graph || exit 1    
-    
+    utils/mkgraph.sh $WORK/lang $EXP/tri3b $EXP/tri3b/graph || exit 1
+    utils/mkgraph.sh $WORK/lang $EXP/sgmm2_5b2 $EXP/sgmm2_5b2/graph || exit 1
 fi
 
 if [ $stage -le 8 ]; then
@@ -257,6 +284,15 @@ if [ $stage -le 8 ]; then
     		    --config conf/decode.config --nj $nspkrs --cmd "$decode_cmd" \
     		    $EXP/tri2b/graph $WORK/test $EXP/tri2b/decode
 
+    echo "decode SAT+FMLLR (tri3b)"
+    steps/decode_fmllr.sh --nj $nspkrs --cmd "$decode_cmd" \
+			  $EXP/tri3b/graph $WORK/test $EXP/tri3b/decode
+
+    echo "decode SGMM"
+    steps/decode_sgmm2.sh --nj $nspkrs --cmd "$decode_cmd" \
+			  --transform-dir exp/tri3b/decode \
+			  $EXP/sgmm2_5b2/graph $WORK/dev $EXP/sgmm2_5b2/decode
+    
 #    Note: change --iter option to select the best model. 4.mdl == final.mdl
     echo "Decode MMI on top of LDA+MLLT."
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
@@ -275,7 +311,6 @@ if [ $stage -le 8 ]; then
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --iter 4 --nj $nspkrs --cmd "$decode_cmd" \
     		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b/decode_it4
-
 
     echo "Decode MPE."
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
@@ -324,4 +359,3 @@ for x in exp/*/decode*; do [ -d $x ] && grep SER $x/wer_* | utils/best_wer.sh; d
 # echo
 # echo "===== run.sh script is finished ====="
 # echo
-
