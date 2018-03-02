@@ -1,30 +1,40 @@
 #!/bin/bash
+
 #set -xeuo pipefail
 #set -x
 . path.sh || exit 1
 . cmd.sh || exit 1
 
-nj=3         # number of parallel jobs (~speakers)
+nj=36         # number of parallel jobs
 lm_order=1     # language model order (n-gram quantity) - 1 is enough for digits grammar
 stage=0
 echo $train_cmd
+
+# DATA
+export WORK=data
+export EXP=exp
+mkdir -p data/train
+mkdir -p data/test
+
 # Safety mechanism (possible running this script with modified arguments)
 . utils/parse_options.sh || exit 1
 [[ $# -ge 1 ]] && { echo "Wrong arguments!"; exit 1; } 
 
-# Removing previously created data (from last run.sh execution)
-rm -rf exp mfcc data/train data/test data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
-mkdir -p data/train
-mkdir -p data/test
 
 # download dataset from github if doesn't exist
 # check wav encoding
+echo '=====' $stage
 
-
-if [ $stage -le 0 ]; then
+if [ $stage -le 1 ]; then
     echo
     echo "===== PREPARING ACOUSTIC DATA ====="
     echo
+
+    # Removing previously created data (from last run.sh execution)
+#    rm -rf exp mfcc data/train data/test data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
+
+    # fsdd_wav=$DATA/free-spoken-digit-dataset/recordings
+    # ./loca/convert_pcm.sh $fsdd_wav
     ./local/make_test.py
     ./local/make_train.py
 
@@ -56,12 +66,12 @@ if [ $stage -le 0 ]; then
 fi
 
 
-if [ $stage -le 1 ]; then
+if [ $stage -le 2 ]; then
     echo
     echo "===== FEATURES EXTRACTION ====="
     echo
     # Making feats.scp files
-    mfccdir=mfcc
+   export  mfccdir=mfcc
     # utils/validate_data_dir.sh data/train     # script for checking if prepared data is all right
     # utils/fix_data_dir.sh data/train          # tool for data sorting if something goes wrong above
     steps/make_mfcc.sh --nj $nj --cmd "$train_cmd" data/train exp/make_mfcc/train $mfccdir
@@ -79,7 +89,7 @@ if [ $stage -le 1 ]; then
 fi
 
 
-if [ $stage -le 2 ]; then
+if [ $stage -le 3 ]; then
     
     echo
     echo "===== PREPARING LANGUAGE DATA ====="
@@ -98,7 +108,7 @@ if [ $stage -le 2 ]; then
 fi
 
 
-if [ $stage -le 3 ]; then
+if [ $stage -le 4 ]; then
     echo
     echo "===== MAKING lm.arpa ====="
     echo
@@ -125,7 +135,7 @@ if [ $stage -le 3 ]; then
     ngram-count -order $lm_order -write-vocab $local/tmp/vocab-full.txt -wbdiscount -text $local/corpus.txt -lm $local/tmp/lm.arpa -sort
 fi
 
-if [ $stage -le 4 ]; then
+if [ $stage -le 5 ]; then
     echo
     echo "===== COMPILING GRAMMAR G.fst ====="
     echo
@@ -137,35 +147,35 @@ if [ $stage -le 4 ]; then
 	fstrmepsilon | fstarcsort --sort_type=ilabel > $lang/G.fst
 fi
 
-if [ $stage -le 5 ]; then
-
-    echo
-    echo "===== MONO TRAINING ====="
-    echo
-
-    #--num-iters 10 --max-iter-inc 8 --totgauss 100 --boost-silence 1.25 --realign-iters "1 4 7 10"
-    steps/train_mono.sh --num-iters 10 --max-iter-inc 8 --totgauss 100 --boost-silence 1.25 --realign-iters "1 3 5 7 10" --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono  || exit 1
-
-    echo
-    echo "===== MONO DECODING ====="
-    echo
-
-    utils/mkgraph.sh --mono data/lang exp/mono exp/mono/graph || exit 1
-    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode || exit 1
-
-    echo
-    echo "===== MONO ALIGNMENT =====" 
-    echo
-
-    steps/align_si.sh --nj $nj --cmd "$train_cmd" data/train data/lang exp/mono exp/mono_ali || exit 1
-
-fi
-
 if [ $stage -le 6 ]; then
 
+
+    # PARAMS
+    # number of states for phoneme training
+    export pdf=10 #1200 #10
+    # number of gaussians used for training
+    export gauss=100 #19200 #100
+    export train_mmi_boost=0.05
+    export mmi_beam=16.0
+    export mmi_lat_beam=10.0
+    export fake="--fake"
+
+    nj=3 # ~number of speakers
+    
     echo
-    echo "===== TRI1 (first triphone pass) TRAINING ====="
+    echo "===== TRAINING ACOUSTIC MODELS====="
     echo
+
+    echo "train monophone model on full data"
+    #--num-iters 10 --max-iter-inc 8 --totgauss 100 --boost-silence 1.25 --realign-iters "1 4 7 10"
+    steps/train_mono.sh --num-iters 10 --max-iter-inc 8 --totgauss $gauss \
+			--boost-silence 1.25 --realign-iters "1 3 5 7 10" \
+			--nj $nj --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono  || exit 1
+
+    echo "get alignments for monophone model"
+    steps/align_si.sh --nj $nj --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono $EXP/mono_ali || exit 1
+
+
     # triphone model to try to capture and model the effects of the two neighboring phones
     # Since the number of possible triphones is very large, many systems use a decision tree to cluster sets of triphones (aka senones) to reduce the complexity of the system to a more manageable scale
 
@@ -173,29 +183,110 @@ if [ $stage -le 6 ]; then
     #        <tot-gauss>   The total number of Gaussian mixtures used to model them (rule of thumb: <20 * num-leaves)
     # num_leaves=2000
     # tot_gauss=11000
-    steps/train_deltas.sh --cmd "$train_cmd" 10 100 data/train data/lang exp/mono_ali exp/tri1 || exit 1
+    
+    echo "Train tri1 [first triphone pass]"
+    steps/train_deltas.sh  --cmd "$train_cmd" \
+			   $pdf $gauss $WORK/train $WORK/lang $EXP/mono_ali $EXP/tri1 || exit 1;
 
-    echo
-    echo "===== TRI1 (first triphone pass) DECODING ====="
-    echo
+    # draw-tree $WORK/lang/phones.txt $EXP/tri1/tree | dot -Tsvg -Gsize=8,10.5  > graph.svg
+    
+    echo "Align tri1"
+    steps/align_si.sh  --nj $nj --cmd "$train_cmd" \
+		       --use-graphs true $WORK/train $WORK/lang $EXP/tri1 $EXP/tri1_ali || exit 1;
 
-    utils/mkgraph.sh data/lang exp/tri1 exp/tri1/graph || exit 1
-    steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/tri1/graph data/test exp/tri1/decode || exit 1
+    echo "Train tri2a [delta+delta-deltas]"
+    steps/train_deltas.sh  --cmd "$train_cmd" $pdf $gauss \
+			   $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2a || exit 1;
 
+    # echo "Train tri2b [LDA+MLLT]"
+    # steps/train_lda_mllt.sh  --cmd "$train_cmd" --splice-opts "--left-context=3 --right-context=3" $pdf $gauss \
+    # 			     $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2b || exit 1;
 
-    echo
-    echo "==== WORD LEVEL ALIGNMENT ===="
-    echo
+    # echo "Align all data with LDA+MLLT system (tri2b)"
+    # steps/align_si.sh  --nj $nj --cmd "$train_cmd" \
+    # 		       --use-graphs true $WORK/train $WORK/lang $EXP/tri2b $EXP/tri2b_ali || exit 1;
 
-    steps/get_ctm.sh data/train data/lang/ exp/mono/decode/ || exit 1
+    # echo "Train MMI on top of LDA+MLLT."
+    # steps/make_denlats.sh  --nj $nj --cmd "$train_cmd" \
+    # 			   --beam $mmi_beam --lattice-beam $mmi_lat_beam \
+    # 			   $WORK/train $WORK/lang $EXP/tri2b $EXP/tri2b_denlats || exit 1;
+    
+    # steps/train_mmi.sh  $WORK/train $WORK/lang $EXP/tri2b_ali $EXP/tri2b_denlats $EXP/tri2b_mmi || exit 1;
+
+    # echo "Train MMI on top of LDA+MLLT with boosting. train_mmi_boost is a e.g. 0.05"
+    # steps/train_mmi.sh  --boost ${train_mmi_boost} $WORK/train $WORK/lang \
+    # 			$EXP/tri2b_ali $EXP/tri2b_denlats $EXP/tri2b_mmi_b${train_mmi_boost} || exit 1;
+
+    # echo "Train MPE."
+    # steps/train_mpe.sh $WORK/train $WORK/lang $EXP/tri2b_ali $EXP/tri2b_denlats $EXP/tri2b_mpe || exit 1;
+
 
 fi
 
 if [ $stage -le 7 ]; then
+
+    echo
+    echo "===== GRAPH GENERATION ====="
+    echo
+    utils/mkgraph.sh --mono $WORK/lang $EXP/mono $EXP/mono/graph || exit 1
+    utils/mkgraph.sh $WORK/lang $EXP/tri1 $EXP/tri1/graph || exit 1
+    utils/mkgraph.sh $WORK/lang $EXP/tri2a $EXP/tri2a/graph || exit 1
+    # utils/mkgraph.sh --mono $WORK/lang $EXP/tri2b $EXP/tri2b/graph || exit 1    
+    # steps/decode.sh --config conf/decode.config --nj $nj --cmd "$decode_cmd" exp/mono/graph data/test exp/mono/decode || exit
+    
+fi
+
+if [ $stage -le 8 ]; then
+
+    export min_lmw=9
+    export max_lmw=20
+    nj=3 # number of speakers..
+    
+    echo "monophone decoding"
+    steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+		    --config conf/decode.config --nj $nj --cmd "$decode_cmd" \
+		    $EXP/mono/graph $WORK/test $EXP/mono/decode
+
+    echo "Decode tri1"
+    steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+		    --config conf/decode.config --nj $nj --cmd "$decode_cmd" \
+		    $EXP/tri1/graph $WORK/test $EXP/tri1/decode
+
+    echo "Decode tri2a"
+    steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+		    --config conf/decode.config --nj $nj --cmd "$decode_cmd" \
+		    $EXP/tri2a/graph $WORK/test $EXP/tri2a/decode
+
+    # echo "Decode tri2b [LDA+MLLT]"
+    # steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+    # 		    --config conf/decode.config --nj $nj --cmd "$decode_cmd" \
+    # 		    $EXP/tri2b/graph $WORK/test $EXP/tri2b/decode
+
+    # Note: change --iter option to select the best model. 4.mdl == final.mdl
+    # echo "Decode MMI on top of LDA+MLLT."
+    # steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+    # 		    --config conf/decode.config --iter 4 --nj $nj --cmd "$decode_cmd" \
+    # 		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi/decode_it4
+    
+    # echo "Decode MMI on top of LDA+MLLT with boosting. train_mmi_boost is a number e.g. 0.05"
+    # steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+    # 		    --config conf/decode.config --iter 4 --nj $nj --cmd "$decode_cmd" \
+    # 		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b${train_mmi_boost}/decode_it4
+
+    # echo "Decode MPE."
+    # steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+    # 		    --config conf/decode.config --iter 4 --nj $nj --cmd "$decode_cmd" \
+    # 		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mpe/decode_it4 || exit 1;    
+fi
+
+
+if [ $stage -le 8 ]; then
     local/online/run_nnet2_multisplice.sh
 fi
 
 
+# echo "==== WORD LEVEL ALIGNMENT ===="
+#     steps/get_ctm.sh data/train data/lang/ exp/mono/decode/ || exit 1
 
 echo
 echo "==== WER ===="
@@ -208,6 +299,10 @@ echo "==== SER ===="
 echo
 
 for x in exp/*/decode*; do [ -d $x ] && grep SER $x/wer_* | utils/best_wer.sh; done
+
+
+#local/results.py $EXP | tee $EXP/results.log
+#local/export_models.sh /tmp $EXP $WORK/lang
 
 
 # echo
