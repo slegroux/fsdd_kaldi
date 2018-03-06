@@ -1,3 +1,4 @@
 *.scp
 data/train/*
 data/test/*
+*~
