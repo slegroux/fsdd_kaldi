@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #set -xeuo pipefail
-#set -x
+set -x
 . path.sh || exit 1
 . cmd.sh || exit 1
 
@@ -28,7 +28,7 @@ if [ $stage -le 1 ]; then
     echo
 
     # Removing previously created data (from last run.sh execution)
-    rm -rf exp mfcc data/train/* data/test/* data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
+    rm -rf exp/* mfcc/* data/train/* data/test/* data/local/lang data/lang data/local/tmp data/local/dict/lexiconp.txt
 
     # fsdd_wav=$DATA/free-spoken-digit-dataset/recordings
     # ./loca/convert_pcm.sh $fsdd_wav
@@ -72,17 +72,18 @@ if [ $stage -le 2 ]; then
     export  mfccdir=mfcc
     # utils/validate_data_dir.sh data/train     # script for checking if prepared data is all right
     # utils/fix_data_dir.sh data/train          # tool for data sorting if something goes wrong above
-    steps/make_mfcc.sh --nj $nspkrs --cmd "$train_cmd" data/train exp/make_mfcc/train $mfccdir
-    steps/make_mfcc.sh --nj $nspkrs --cmd "$train_cmd" data/test exp/make_mfcc/test $mfccdir
-
-    # Normalize cepstral features. Making cmvn.scp files
-    # use --fake flag to skip feature normalization step
-    steps/compute_cmvn_stats.sh data/train exp/make_mfcc/train $mfccdir
-    steps/compute_cmvn_stats.sh data/test exp/make_mfcc/test $mfccdir
+    for data_set in train test; do
+      steps/make_mfcc.sh --nj $nspkrs --cmd "$train_cmd" data/$data_set exp/make_mfcc/$data_set $mfccdir || exit 1;
+      # Normalize cepstral features. Making cmvn.scp files
+      # use --fake flag to skip feature normalization step
+      steps/compute_cmvn_stats.sh data/$data_set exp/make_mfcc/$data_set $mfccdir || exit 1;
+      utils/fix_data_dir.sh data/$data_set ||exit 1
+    done
+      
 
     # Print MFCC result
-    copy-feats scp:mfcc/raw_mfcc_test.1.scp ark,t:- |head
-    copy-feats ark:mfcc/raw_mfcc_test.1.ark ark,t:- |head
+    # copy-feats scp:mfcc/raw_mfcc_test.1.scp ark,t:- |head
+    # copy-feats ark:mfcc/raw_mfcc_test.1.ark ark,t:- |head
 
 fi
 
@@ -169,7 +170,7 @@ if [ $stage -le 6 ]; then
     # 			--boost-silence 1.25 --realign-iters "1 3 5 7 10" \
     # 			--nj $nprocs --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono  || exit 1
 
-    steps/train_mono.sh --nj $nprocs --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono  || exit 1
+    steps/train_mono.sh --nj $nprocs --boost-silence 1.25 --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono  || exit 1
 
     echo "get alignments for monophone model"
     steps/align_si.sh --nj $nprocs --cmd "$train_cmd" $WORK/train $WORK/lang $EXP/mono $EXP/mono_ali || exit 1
@@ -201,14 +202,18 @@ if [ $stage -le 6 ]; then
     steps/train_deltas.sh  --cmd "$train_cmd" $pdf $gauss \
 			   $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2a || exit 1;
 
+    echo "Align tri2a"
+    steps/align_si.sh  --nj $nprocs --cmd "$train_cmd" \
+		       --use-graphs true $WORK/train $WORK/lang $EXP/tri2a $EXP/tri2a_ali || exit 1;
+
     echo "Train tri2b [LDA+MLLT]"
     pdf=4200
     gauss=40000
     steps/train_lda_mllt.sh  --cmd "$train_cmd" --splice-opts "--left-context=3 --right-context=3" $pdf $gauss \
-    			     $WORK/train $WORK/lang $EXP/tri1_ali $EXP/tri2b || exit 1;
+    			     $WORK/train $WORK/lang $EXP/tri2a_ali $EXP/tri2b || exit 1;
 
-    echo "Align"
-    steps/align_si.sh  --nj $nprocs --cmd "$train_cmd" \
+    echo "Align fmllr"
+    steps/align_fmllr.sh  --nj $nprocs --cmd "$train_cmd" \
     		       --use-graphs true $WORK/train $WORK/lang $EXP/tri2b $EXP/tri2b_ali || exit 1;
 
     echo "SAT+fmllr (tri3b)"
@@ -217,16 +222,16 @@ if [ $stage -le 6 ]; then
     steps/train_sat.sh --cmd "$train_cmd" $pdf $gauss \
       $WORK/train $WORK/lang $EXP/tri2b_ali $EXP/tri3b || exit 1;
 
-    echo "align"
-    steps/align_si.sh  --nj $nprocs --cmd "$train_cmd" \
+    echo "align fmllr"
+    steps/align_fmllr.sh  --nj $nprocs --cmd "$train_cmd" \
     		       --use-graphs true $WORK/train $WORK/lang $EXP/tri3b $EXP/tri3b_ali || exit 1;
 
     echo "SGMM UBM (ubm5b2)"
     steps/train_ubm.sh  --cmd "$train_cmd"  \
-      200 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2
+      200 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2 || exit 1;
 
     steps/train_sgmm2.sh  --cmd "$train_cmd"  \
-       5200 12000 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2/final.ubm $EXP/sgmm2_5b2
+       5200 12000 $WORK/train $WORK/lang $EXP/tri3b_ali $EXP/ubm5b2/final.ubm $EXP/sgmm2_5b2 || exit 1;
 
 
     echo "Train MMI on top of LDA+MLLT."
@@ -265,52 +270,52 @@ if [ $stage -le 8 ]; then
     max_lmw=20
     
     echo "monophone decoding"
-    steps/decode.sh --boost-silence 1.25 --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
+    steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
 		    --config conf/decode.config --nj $nspkrs --cmd "$decode_cmd" \
-		    $EXP/mono/graph $WORK/test $EXP/mono/decode
+		    $EXP/mono/graph $WORK/test $EXP/mono/decode || exit 1
 
     echo "Decode tri1"
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
 		    --config conf/decode.config --nj $nspkrs --cmd "$decode_cmd" \
-		    $EXP/tri1/graph $WORK/test $EXP/tri1/decode
+		    $EXP/tri1/graph $WORK/test $EXP/tri1/decode || exit 1 
 
     echo "Decode tri2a"
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
 		    --config conf/decode.config --nj $nspkrs --cmd "$decode_cmd" \
-		    $EXP/tri2a/graph $WORK/test $EXP/tri2a/decode
+		    $EXP/tri2a/graph $WORK/test $EXP/tri2a/decode || exit 1
 
     echo "Decode tri2b [LDA+MLLT]"
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --nj $nspkrs --cmd "$decode_cmd" \
-    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b/decode
+    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b/decode || exit 1
 
     echo "decode SAT+FMLLR (tri3b)"
     steps/decode_fmllr.sh --nj $nspkrs --cmd "$decode_cmd" \
-			  $EXP/tri3b/graph $WORK/test $EXP/tri3b/decode
+			  $EXP/tri3b/graph $WORK/test $EXP/tri3b/decode || exit 1
 
     echo "decode SGMM"
     steps/decode_sgmm2.sh --nj $nspkrs --cmd "$decode_cmd" \
 			  --transform-dir exp/tri3b/decode \
-			  $EXP/sgmm2_5b2/graph $WORK/dev $EXP/sgmm2_5b2/decode
+			  $EXP/sgmm2_5b2/graph $WORK/test $EXP/sgmm2_5b2/decode || exit 1
     
 #    Note: change --iter option to select the best model. 4.mdl == final.mdl
     echo "Decode MMI on top of LDA+MLLT."
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --iter 3 --nj $nspkrs --cmd "$decode_cmd" \
-    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi/decode_it3
+    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi/decode_it3 || exit 1
 
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --iter 4 --nj $nspkrs --cmd "$decode_cmd" \
-    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi/decode_it4
+    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi/decode_it4 || exit 1
     
     echo "Decode MMI on top of LDA+MLLT with boosting. train_mmi_boost is a number e.g. 0.05"
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --iter 3 --nj $nspkrs --cmd "$decode_cmd" \
-    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b/decode_it3
+    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b/decode_it3 || exit 1
 
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
     		    --config conf/decode.config --iter 4 --nj $nspkrs --cmd "$decode_cmd" \
-    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b/decode_it4
+    		    $EXP/tri2b/graph $WORK/test $EXP/tri2b_mmi_b/decode_it4 || exit 1
 
     echo "Decode MPE."
     steps/decode.sh --scoring-opts "--min-lmw $min_lmw --max-lmw $max_lmw" \
@@ -323,8 +328,9 @@ if [ $stage -le 8 ]; then
 fi
 
 
-if [ $stage -le 8 ]; then
-    # local/online/run_nnet2_multisplice.sh
+if [ $stage -le 9 ]; then
+    rm data/train_sp/feats.scp
+    ./local/nnet3/run_tdnn.sh || exit 1;
     echo "stage 8"
 fi
 
