@@ -1,12 +1,15 @@
 #!/usr/bin/env python 
-
 import pdb
 import os, re
+
+# change global var DATA to point to your data directory if necessary
 DATA_PATH = os.getenv('DATA') + "/free-spoken-digit-dataset/recordings"
 files = os.listdir(DATA_PATH)
 LOCAL_PATH = 'data'
 print(LOCAL_PATH)
+
 # 50 utterances for each digit. we take 10-29 (30 .wav out of)
+
 expression = r"_[10-29].wav"
 name = r"_(.*)_"
 digit = r"(\d)_"
