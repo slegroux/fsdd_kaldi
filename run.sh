@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #set -xeuo pipefail
-set -x
+#set -x
 . path.sh || exit 1
 . cmd.sh || exit 1
 
@@ -51,15 +51,17 @@ if [ $stage -le 1 ]; then
     # utt2spk    [<uterranceID> <speakerID>]
     # corpus.txt    [<text_transcription>]
 
+    # Making spk2utt files
+    utils/utt2spk_to_spk2utt.pl data/train/utt2spk > data/train/spk2utt
+    utils/utt2spk_to_spk2utt.pl data/test/utt2spk > data/test/spk2utt
+
     # sort utt2spk
     utils/validate_data_dir.sh data/train
     utils/validate_data_dir.sh data/test
     utils/fix_data_dir.sh data/train
     utils/fix_data_dir.sh data/test
 
-    # Making spk2utt files
-    utils/utt2spk_to_spk2utt.pl data/train/utt2spk > data/train/spk2utt
-    utils/utt2spk_to_spk2utt.pl data/test/utt2spk > data/test/spk2utt
+
 fi
 
 
@@ -328,11 +330,11 @@ if [ $stage -le 8 ]; then
 fi
 
 
-if [ $stage -le 9 ]; then
-    rm data/train_sp/feats.scp
-    ./local/nnet3/run_tdnn.sh || exit 1;
-    echo "stage 8"
-fi
+# if [ $stage -le 9 ]; then
+#     rm data/train_sp/feats.scp
+#     ./local/nnet3/run_tdnn.sh || exit 1;
+#     echo "stage 8"
+# fi
 
 
 # echo "==== WORD LEVEL ALIGNMENT ===="
