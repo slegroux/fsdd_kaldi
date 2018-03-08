@@ -14,4 +14,4 @@ mkdir -p $data_dir/train $data_dir/test
 ./train_test_split.sh $data_dir || exit 1
 
 echo "==== generate wav.scp & utt2spk"
-./create_wav_scp_utt2spk.sh $data_dir || exit 1
+./create_wav_scp_utt2spk_text.sh $data_dir || exit 1
